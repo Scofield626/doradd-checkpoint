@@ -18,6 +18,7 @@
 #include "pin-thread.hpp"
 #include "checkpoint_stats.hpp"
 #include "../storage/garbage_collector.hpp"
+
 #ifndef CHECKPOINT_BATCH_SIZE
 #  error "You must define CHECKPOINT_BATCH_SIZE"
 #endif
@@ -94,12 +95,6 @@ public:
   Checkpointer(const std::string& path = DefaultDBPath)
     : tx_count_threshold(DefaultThreshold), last_finish(clock::now()) {
     if (!storage.open(path)) throw std::runtime_error("Failed to open DB");
-    std::string meta_prefix = "_meta_bit";
-    bits.resize(10'000'000);
-    for (auto& kv : storage.scan_prefix(meta_prefix)) {
-      uint64_t k = std::stoull(kv.first.substr(0, kv.first.size() - meta_prefix.size()));
-      bits[k] = (kv.second.size()>0 && kv.second[0]=='1');
-    }
 
     // Initialize garbage collector
     gc = std::make_unique<GarbageCollector>(storage);
@@ -115,8 +110,6 @@ public:
   void increment_tx_count(int count) {
     tx_count_since_last_checkpoint.fetch_add(count, std::memory_order_relaxed);
     total_transactions.fetch_add(count, std::memory_order_relaxed);
-    if (checkpoint_in_flight.load(std::memory_order_relaxed))
-      tx_during_last_checkpoint.fetch_add(count, std::memory_order_relaxed);
   }
 
   bool should_checkpoint() const {
@@ -129,8 +122,10 @@ public:
       int prev = current_diff_idx.exchange(1 - current_diff_idx.load(std::memory_order_relaxed), std::memory_order_relaxed);
       diffs[prev].swap(dirty_keys);
       tx_counts.push_back(tx_count_since_last_checkpoint.load(std::memory_order_relaxed));
+      if (tx_counts.size() > MAX_STORED_INTERVALS) {
+        tx_counts.pop_front();
+      }
       tx_count_since_last_checkpoint.store(0, std::memory_order_relaxed);
-      tx_during_last_checkpoint.store(0, std::memory_order_relaxed);
     }
   }
 
@@ -160,7 +155,10 @@ public:
     }
 
     // 5) Calculate number of batches and create a latch
-    size_t num_batches = cows.size() / BatchSize + cows.size() % BatchSize;
+    size_t num_batches = (cows.size() + BatchSize - 1) / BatchSize;
+    if (cows.empty()) { // Handle the case of zero dirty rows explicitly
+        num_batches = 0;
+    }
     auto latch = std::make_shared<std::latch>(num_batches);
 
     // 6) Allocate a new snapshot ID for this checkpoint
@@ -189,8 +187,10 @@ public:
     // 9) Once every batch has finished, write the global snapshot pointer and total_txns
     {
         std::lock_guard<std::mutex> lg(completion_mu);
-        completion_thread = std::thread([this, snap, latch]() {
-            latch->wait();
+        completion_thread = std::thread([this, snap, latch, num_batches]() { // Capture num_batches
+            if (num_batches > 0) { // Only wait if there were actual batches
+                latch->wait();
+            }
             auto batch = storage.create_batch();
             // bump the global snapshot in the DB
             storage.add_to_batch(batch, GLOBAL_SNAPSHOT_KEY, std::to_string(snap));
@@ -200,9 +200,24 @@ public:
                                  std::to_string(total_transactions.load(std::memory_order_relaxed)));
             storage.commit_batch(batch);
             storage.flush();
+
+            // Update metrics
+            auto finish_time = clock::now();
+            uint64_t duration_ns;
+            {
+                std::lock_guard<std::mutex> lg(intervals_mutex);
+                duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(finish_time - last_finish).count();
+                intervals.push_back(duration_ns);
+                if (intervals.size() > MAX_STORED_INTERVALS) {
+                    intervals.pop_front();
+                }
+                last_finish = finish_time;
+            }
+            total_interval_ns.fetch_add(duration_ns, std::memory_order_relaxed);
+            number_of_checkpoints_done.fetch_add(1, std::memory_order_relaxed);
+
             std::cout << "Checkpoint " << snap << " completed\n";
         });
-        completion_thread.detach();
     }
 }
 
@@ -270,7 +285,7 @@ size_t try_recovery()
 }
 
   double get_avg_interval_ms() const {
-    size_t c = interval_count.load(std::memory_order_relaxed);
+    size_t c = number_of_checkpoints_done.load(std::memory_order_relaxed);
     if (!c) return 0.0;
     double avg_ns = double(total_interval_ns.load(std::memory_order_relaxed)) / double(c);
     return avg_ns * 1e-6;
@@ -280,14 +295,15 @@ size_t try_recovery()
     return get_avg_interval_ms();
   }
 
-  double get_avg_tx_between_checkpoints() const {
-    return number_of_checkpoints_done
-      ? double(total_transactions.load(std::memory_order_relaxed)) / double(number_of_checkpoints_done)
+  double get_avg_tx_between_checkpoints() {
+    size_t num_checkpoints = number_of_checkpoints_done.load(std::memory_order_relaxed);
+    return num_checkpoints
+      ? double(total_transactions.load(std::memory_order_relaxed)) / double(num_checkpoints)
       : 0.0;
   }
 
   size_t get_total_checkpoints() const {
-    return number_of_checkpoints_done;
+    return number_of_checkpoints_done.load(std::memory_order_relaxed);
   }
 
   size_t get_total_transactions() const {
@@ -352,23 +368,17 @@ private:
   std::array<std::vector<uint64_t>, 2> diffs;
   std::thread completion_thread;
   std::mutex completion_mu;
-  std::mutex write_mu;
   mutable std::mutex intervals_mutex;
-  std::vector<bool> bits;
   size_t tx_count_threshold;
   std::atomic<size_t> tx_count_since_last_checkpoint{0};
   std::atomic<size_t> total_transactions{0};
-  std::atomic<size_t> tx_during_last_checkpoint{0};
   using clock = std::chrono::steady_clock;
   std::atomic<uint64_t> total_interval_ns{0};
-  std::atomic<size_t> interval_count{0};
+  std::atomic<size_t> number_of_checkpoints_done{0};
   clock::time_point last_finish;
-  int number_of_checkpoints_done{0};
   std::deque<uint64_t> intervals;  // Store individual intervals in nanoseconds
   std::deque<size_t> tx_counts;    // Store transaction counts between checkpoints  
   std::atomic<uint64_t> current_snapshot{0}; // Store the current snapshot ID
   static constexpr const char* GLOBAL_SNAPSHOT_KEY = "global_snapshot";
   std::unique_ptr<GarbageCollector> gc;
 };
-
-

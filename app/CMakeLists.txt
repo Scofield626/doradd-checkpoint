@@ -74,7 +74,7 @@ endif()
 target_include_directories(ycsb PRIVATE ${ROCKSDB_INCLUDE_DIR})
 target_link_libraries(ycsb PRIVATE ${ROCKSDB_LIBRARY})
 target_link_libraries(ycsb PRIVATE -lgflags -lsnappy -lz -lbz2 -llz4 -lzstd)
-target_link_libraries(ycsb PRIVATE -labsl_hash -labsl_raw_hash_set)
+#target_link_libraries(ycsb PRIVATE -labsl_hash -labsl_raw_hash_set)
 
 # Commenting out all TPCC-related sections
 #add_custom_command(

@@ -115,9 +115,12 @@ public:
       ring->push(CHECKPOINT_MARKER);
       int prev = current_diff_idx.exchange(1 - current_diff_idx.load(std::memory_order_relaxed), std::memory_order_relaxed);
       diffs[prev].swap(dirty_keys);
-      tx_counts.push_back(tx_count_since_last_checkpoint.load(std::memory_order_relaxed));
-      if (tx_counts.size() > MAX_STORED_INTERVALS) {
-        tx_counts.pop_front();
+      {
+        std::lock_guard<std::mutex> lg(intervals_mutex);
+        tx_counts.push_back(tx_count_since_last_checkpoint.load(std::memory_order_relaxed));
+        if (tx_counts.size() > MAX_STORED_INTERVALS) {
+          tx_counts.pop_front();
+        }
       }
       tx_count_since_last_checkpoint.store(0, std::memory_order_relaxed);
     }

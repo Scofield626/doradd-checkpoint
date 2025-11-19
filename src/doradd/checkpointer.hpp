@@ -149,10 +149,7 @@ public:
     }
 
     // 5) Calculate number of batches and create a latch
-    size_t num_batches = (cows.size() + BatchSize - 1) / BatchSize;
-    if (cows.empty()) { // Handle the case of zero dirty rows explicitly
-        num_batches = 0;
-    }
+    size_t num_batches = cows.size() / BatchSize + cows.size() % BatchSize;
     auto latch = std::make_shared<std::latch>(num_batches);
 
     // 6) Allocate a new snapshot ID for this checkpoint
@@ -181,10 +178,8 @@ public:
     // 9) Once every batch has finished, write the global snapshot pointer and total_txns
     {
         std::lock_guard<std::mutex> lg(completion_mu);
-        completion_thread = std::thread([this, snap, latch, num_batches]() { // Capture num_batches
-            if (num_batches > 0) { // Only wait if there were actual batches
-                latch->wait();
-            }
+        completion_thread = std::thread([this, snap, latch]() { // Capture num_batches
+            latch->wait();
             auto batch = storage.create_batch();
             // bump the global snapshot in the DB
             storage.add_to_batch(batch, GLOBAL_SNAPSHOT_KEY, std::to_string(snap));

@@ -80,12 +80,6 @@ namespace batch_helpers {
   }
 }
 
-struct BatchMetrics {
-  std::atomic<size_t> total_bytes{0};
-  std::atomic<size_t> successful{0};
-  std::atomic<uint64_t> total_us{0};
-};
-
 template<typename StorageType, typename TxnType, typename RowType = TxnType>
 class Checkpointer {
 public:
@@ -172,7 +166,7 @@ public:
             // serialize the row
             std::string data(reinterpret_cast<const char*>(&obj), sizeof(RowType));
             // write under "<row_id>_v<version_id>"
-            std::string versioned_key = std::to_string(*key_ptr) + "_v" + std::to_string(snap);
+            std::string versioned_key = std::to_string(key_ptr[i]) + "_v" + std::to_string(snap);
             storage.add_to_batch(batch, versioned_key, data);
         }
         storage.commit_batch(batch);

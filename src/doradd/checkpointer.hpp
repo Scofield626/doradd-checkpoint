@@ -84,10 +84,10 @@ template<typename StorageType, typename TxnType, typename RowType = TxnType>
 class Checkpointer {
 public:
   static constexpr int CHECKPOINT_MARKER = -1;
-  static constexpr size_t MAX_STORED_INTERVALS = 1000;  // Maximum number of intervals to store
+
 
   Checkpointer(const std::string& path = DefaultDBPath)
-    : tx_count_threshold(DefaultThreshold), last_finish(clock::now()) {
+    : tx_count_threshold(DefaultThreshold) {
     if (!storage.open(path)) throw std::runtime_error("Failed to open DB");
 
     // Initialize garbage collector
@@ -115,13 +115,7 @@ public:
       ring->push(CHECKPOINT_MARKER);
       int prev = current_diff_idx.exchange(1 - current_diff_idx.load(std::memory_order_relaxed), std::memory_order_relaxed);
       diffs[prev].swap(dirty_keys);
-      {
-        std::lock_guard<std::mutex> lg(intervals_mutex);
-        tx_counts.push_back(tx_count_since_last_checkpoint.load(std::memory_order_relaxed));
-        if (tx_counts.size() > MAX_STORED_INTERVALS) {
-          tx_counts.pop_front();
-        }
-      }
+
       tx_count_since_last_checkpoint.store(0, std::memory_order_relaxed);
     }
   }
@@ -193,19 +187,7 @@ public:
             storage.commit_batch(batch);
             storage.flush();
 
-            // Update metrics
-            auto finish_time = clock::now();
-            uint64_t duration_ns;
-            {
-                std::lock_guard<std::mutex> lg(intervals_mutex);
-                duration_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(finish_time - last_finish).count();
-                intervals.push_back(duration_ns);
-                if (intervals.size() > MAX_STORED_INTERVALS) {
-                    intervals.pop_front();
-                }
-                last_finish = finish_time;
-            }
-            total_interval_ns.fetch_add(duration_ns, std::memory_order_relaxed);
+
             number_of_checkpoints_done.fetch_add(1, std::memory_order_relaxed);
 
             std::cout << "Checkpoint " << snap << " completed\n";
@@ -276,24 +258,6 @@ size_t try_recovery()
     return total_transactions.load(std::memory_order_relaxed);
 }
 
-  double get_avg_interval_ms() const {
-    size_t c = number_of_checkpoints_done.load(std::memory_order_relaxed);
-    if (!c) return 0.0;
-    double avg_ns = double(total_interval_ns.load(std::memory_order_relaxed)) / double(c);
-    return avg_ns * 1e-6;
-  }
-
-  double get_avg_time_between_checkpoints() const {
-    return get_avg_interval_ms();
-  }
-
-  double get_avg_tx_between_checkpoints() {
-    size_t num_checkpoints = number_of_checkpoints_done.load(std::memory_order_relaxed);
-    return num_checkpoints
-      ? double(total_transactions.load(std::memory_order_relaxed)) / double(num_checkpoints)
-      : 0.0;
-  }
-
   size_t get_total_checkpoints() const {
     return number_of_checkpoints_done.load(std::memory_order_relaxed);
   }
@@ -311,46 +275,7 @@ size_t try_recovery()
     }
   }
 
-  std::vector<double> get_all_intervals_ms() const {
-    std::lock_guard<std::mutex> lg(intervals_mutex);
-    std::vector<double> result;
-    result.reserve(intervals.size());
-    for (uint64_t ns : intervals) {
-      result.push_back(ns * 1e-6);  // Convert to milliseconds
-    }
-    return result;
-  }
 
-  double get_interval_ms(size_t idx) const {
-    std::lock_guard<std::mutex> lg(intervals_mutex);
-    return intervals[idx] * 1e-6;
-  }
-
-  void print_intervals() const {
-    auto intervals_ms = get_all_intervals_ms();
-    printf("Checkpoint intervals (ms):\n");
-    for (size_t i = 0; i < intervals_ms.size(); ++i) {
-      printf("  %zu: %.3f\n", i, intervals_ms[i]);
-    }
-  }
-
-  std::vector<size_t> get_all_tx_counts() const {
-    std::lock_guard<std::mutex> lg(intervals_mutex);
-    std::vector<size_t> result;
-    result.reserve(tx_counts.size());
-    for (size_t count : tx_counts) {
-      result.push_back(count);
-    }
-    return result;
-  }
-
-  void print_tx_counts() const {
-    auto counts = get_all_tx_counts();
-    printf("Transactions between checkpoints:\n");
-    for (size_t i = 0; i < counts.size(); ++i) {
-      printf("  %zu: %zu\n", i, counts[i]);
-    }
-  }
 
 private:
   StorageType storage;
@@ -360,16 +285,13 @@ private:
   std::array<std::vector<uint64_t>, 2> diffs;
   std::thread completion_thread;
   std::mutex completion_mu;
-  mutable std::mutex intervals_mutex;
+
   size_t tx_count_threshold;
   std::atomic<size_t> tx_count_since_last_checkpoint{0};
   std::atomic<size_t> total_transactions{0};
   using clock = std::chrono::steady_clock;
-  std::atomic<uint64_t> total_interval_ns{0};
   std::atomic<size_t> number_of_checkpoints_done{0};
-  clock::time_point last_finish;
-  std::deque<uint64_t> intervals;  // Store individual intervals in nanoseconds
-  std::deque<size_t> tx_counts;    // Store transaction counts between checkpoints  
+
   std::atomic<uint64_t> current_snapshot{0}; // Store the current snapshot ID
   static constexpr const char* GLOBAL_SNAPSHOT_KEY = "global_snapshot";
   std::unique_ptr<GarbageCollector> gc;

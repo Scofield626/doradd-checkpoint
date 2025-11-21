@@ -618,15 +618,9 @@ struct Spawner
         fprintf(res_throughput_fd, 
           "exec  - %lf tx/s\n", (tx_exec_sum - last_tx_exec_sum) / dur_cnt);
         fprintf(res_throughput_fd, "Number of checkpoints: %lu\n", checkpointer->get_total_checkpoints());
-        for (size_t i = 0; i < checkpointer->get_total_checkpoints(); i++) {
-          fprintf(res_throughput_fd, "Checkpoint %lu: %lf\n", i, checkpointer->get_interval_ms(i));
-        }
+
         fflush(res_throughput_fd);
         fclose(res_throughput_fd);
-        
-        // Print checkpoint intervals and transaction counts
-        checkpointer->print_intervals();
-        checkpointer->print_tx_counts();
         
 #ifdef RPC_LATENCY
         // fprintf(res_log_fd, "%lf\n", tx_count / dur_cnt);

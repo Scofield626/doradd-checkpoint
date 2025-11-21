@@ -1,16 +1,15 @@
 #pragma once
 
+#include "../storage/rocksdb.hpp"
+#include "SPSCQueue.h"
+#include "checkpointer.hpp"
 #include "config.hpp"
 #include "hugepage.hpp"
 #include "warmup.hpp"
-#include "SPSCQueue.h"
-#include "checkpointer.hpp"
-#include "../storage/rocksdb.hpp"
 
 #include <cassert>
 #include <fcntl.h>
 #include <mutex>
-#include <numeric>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -18,6 +17,8 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+using namespace rigtorp;
 
 template<typename T>
 struct FileDispatcher
@@ -231,7 +232,7 @@ public:
 
       tx_spawn_sum += look_ahead;
 
-      int ret = dispatch_batch();
+      dispatch_batch();
 
       // announce throughput
       if (tx_count >= ANNOUNCE_THROUGHPUT_BATCH_SIZE)
@@ -241,9 +242,10 @@ public:
         auto dur_cnt = duration.count();
         if (counter_registered)
           tx_exec_sum = calc_tx_exec_sum();
-        printf("spawn - %lf tx/s\n", tx_count / dur_cnt);
+        printf("spawn - %lf tx/s\n", static_cast<double>(tx_count) / dur_cnt);
         printf(
-          "exec  - %lf tx/s\n", (tx_exec_sum - last_tx_exec_sum) / dur_cnt);
+          "exec  - %lf tx/s\n",
+          static_cast<double>(tx_exec_sum - last_tx_exec_sum) / dur_cnt);
         tx_count = 0;
         last_tx_exec_sum = tx_exec_sum;
         last_print = time_now;
@@ -271,8 +273,7 @@ struct Indexer
     void* mmap_ret,
     rigtorp::SPSCQueue<int>* ring_,
     std::atomic<uint64_t>* req_cnt_,
-    Checkpointer<RocksDBStore, T, typename T::RowType>* checkpointer_
-    )
+    Checkpointer<RocksDBStore, T, typename T::RowType>* checkpointer_)
   : read_top(reinterpret_cast<char*>(mmap_ret)),
     ring(ring_),
     recvd_req_cnt(req_cnt_),
@@ -316,10 +317,10 @@ struct Indexer
     int i, ret = 0;
     int batch; // = MAX_BATCH;
 
-
     while (1)
     {
-      if (checkpointer->should_checkpoint()) {
+      if (checkpointer->should_checkpoint())
+      {
         checkpointer->schedule_checkpoint(ring, std::move(dirty_keys));
         seen_keys.assign(seen_keys.size(), false);
         dirty_keys.clear();
@@ -339,11 +340,14 @@ struct Indexer
         ret = T::prepare_cowns(read_head);
         auto txn = reinterpret_cast<T::Marshalled*>(read_head);
         auto indices_size = txn->indices_size;
-        for (size_t i = 0; i < indices_size; i++) {
-          if (seen_keys.size() <= txn->indices[i]) {
+        for (size_t i = 0; i < indices_size; i++)
+        {
+          if (seen_keys.size() <= txn->indices[i])
+          {
             seen_keys.resize(2 * txn->indices[i] + 1, false);
           }
-          if (!seen_keys[txn->indices[i]]) {
+          if (!seen_keys[txn->indices[i]])
+          {
             seen_keys[txn->indices[i]] = true;
             dirty_keys.push_back(txn->indices[i]);
           }
@@ -390,7 +394,6 @@ struct Prefetcher
     int ret;
     uint32_t idx = 0;
     char* read_head = read_top;
-    char* prepare_read_head = read_top;
     int batch_sz;
 
     while (1)
@@ -398,7 +401,6 @@ struct Prefetcher
       if (idx > (read_count - MAX_BATCH))
       {
         read_head = read_top;
-        prepare_read_head = read_top;
         idx = 0;
       }
 
@@ -407,7 +409,8 @@ struct Prefetcher
         continue;
 #endif
       int tag = *ring_indexer->front();
-      if (tag == Checkpointer<RocksDBStore, T>::CHECKPOINT_MARKER) {
+      if (tag == Checkpointer<RocksDBStore, T>::CHECKPOINT_MARKER)
+      {
         ring_indexer->pop();
         ring->push(tag);
         continue;
@@ -422,7 +425,7 @@ struct Prefetcher
       }
 #endif
 
-      for (size_t i = 0; i < batch_sz; i++)
+      for (int i = 0; i < batch_sz; i++)
       {
 #if defined(TEST_TWO) || defined(INDEXER)
         ret = T::prefetch_cowns(read_head);
@@ -559,11 +562,13 @@ struct Spawner
         break;
 #endif
 
-      if (!ring->front()) {
+      if (!ring->front())
+      {
         continue;
       }
 
-      if (*ring->front() == Checkpointer<RocksDBStore, T>::CHECKPOINT_MARKER) {
+      if (*ring->front() == Checkpointer<RocksDBStore, T>::CHECKPOINT_MARKER)
+      {
         checkpointer->process_checkpoint_request(ring);
         continue;
       }
@@ -610,18 +615,27 @@ struct Spawner
         if (counter_registered)
           tx_exec_sum = calc_tx_exec_sum();
         FILE* res_throughput_fd = fopen("results/spawn.txt", "a");
-        printf("spawn - %lf tx/s\n", tx_count / dur_cnt);
+        printf("spawn - %lf tx/s\n", static_cast<double>(tx_count) / dur_cnt);
         printf(
-          "exec  - %lf tx/s\n", (tx_exec_sum - last_tx_exec_sum) / dur_cnt);
+          "exec  - %lf tx/s\n",
+          static_cast<double>(tx_exec_sum - last_tx_exec_sum) / dur_cnt);
         printf("dur in seconds: %lf\n", dur_cnt);
-        fprintf(res_throughput_fd, "spawn - %lf tx/s\n", tx_count / dur_cnt);
-        fprintf(res_throughput_fd, 
-          "exec  - %lf tx/s\n", (tx_exec_sum - last_tx_exec_sum) / dur_cnt);
-        fprintf(res_throughput_fd, "Number of checkpoints: %lu\n", checkpointer->get_total_checkpoints());
+        fprintf(
+          res_throughput_fd,
+          "spawn - %lf tx/s\n",
+          static_cast<double>(tx_count) / dur_cnt);
+        fprintf(
+          res_throughput_fd,
+          "exec  - %lf tx/s\n",
+          static_cast<double>(tx_exec_sum - last_tx_exec_sum) / dur_cnt);
+        fprintf(
+          res_throughput_fd,
+          "Number of checkpoints: %lu\n",
+          checkpointer->get_total_checkpoints());
 
         fflush(res_throughput_fd);
         fclose(res_throughput_fd);
-        
+
 #ifdef RPC_LATENCY
         // fprintf(res_log_fd, "%lf\n", tx_count / dur_cnt);
 #endif

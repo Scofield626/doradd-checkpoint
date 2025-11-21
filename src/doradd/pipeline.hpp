@@ -1,17 +1,17 @@
 #pragma once
 
+#include "../storage/rocksdb.hpp"
 #include "SPSCQueue.h"
+#include "checkpoint_stats.hpp"
+#include "checkpointer.hpp"
 #include "config.hpp"
 #include "dispatcher.hpp"
 #include "pin-thread.hpp"
 #include "rpc_handler.hpp"
-#include "../storage/rocksdb.hpp"
-#include "checkpointer.hpp"
 #include "txcounter.hpp"
 
 #include <thread>
 #include <unordered_map>
-#include <filesystem>
 
 std::unordered_map<std::thread::id, uint64_t*>* counter_map;
 std::unordered_map<std::thread::id, log_arr_type*>* log_map;
@@ -21,7 +21,12 @@ std::mutex* counter_map_mutex;
 ts_type benchmark_start_time;
 
 template<typename T>
-void build_pipelines(int worker_cnt, char* log_name, char* gen_type, int argc = 0, char** argv = nullptr)
+void build_pipelines(
+  int worker_cnt,
+  char* log_name,
+  char* gen_type,
+  int argc = 0,
+  char** argv = nullptr)
 {
   // init verona-rt scheduler
   auto& sched = Scheduler::get();
@@ -36,10 +41,12 @@ void build_pipelines(int worker_cnt, char* log_name, char* gen_type, int argc = 
   counter_map_mutex = new std::mutex();
 
   // Create storage instance and checkpointer
-  auto* checkpointer = new Checkpointer<RocksDBStore, T, typename T::RowType>("/home/syl121/database/checkpoint.db");
-  
+  auto* checkpointer = new Checkpointer<RocksDBStore, T, typename T::RowType>(
+    "/home/syl121/database/checkpoint.db");
+
   // Pass command line arguments to the checkpointer if available
-  if (argc > 0 && argv != nullptr) {
+  if (argc > 0 && argv != nullptr)
+  {
     checkpointer->parse_args(argc, argv);
     CheckpointStats::parse_args(argc, argv);
   }
@@ -47,10 +54,10 @@ void build_pipelines(int worker_cnt, char* log_name, char* gen_type, int argc = 
   // init and run dispatcher pipelines
   when() << [&]() {
     printf("Init and Run - Dispatcher Pipelines\n");
-    
+
     // Initialize benchmark start time
     benchmark_start_time = std::chrono::system_clock::now();
-    
+
     // sched.add_external_event_source();
 
     std::atomic<uint64_t> req_cnt(0);
@@ -133,10 +140,10 @@ void build_pipelines(int worker_cnt, char* log_name, char* gen_type, int argc = 
       res_log_fd);
 #    else
     Spawner<T> spawner(
-      ret, 
-      worker_cnt, 
-      counter_map, 
-      counter_map_mutex, 
+      ret,
+      worker_cnt,
+      counter_map,
+      counter_map_mutex,
       &ring_pref_disp,
       checkpointer);
 #    endif // RPC_LATENCY
@@ -193,10 +200,10 @@ void build_pipelines(int worker_cnt, char* log_name, char* gen_type, int argc = 
 
 #ifdef LOG_LATENCY
     printf("flush latency stats\n");
-    
+
     // Create results directory if it doesn't exist
     std::filesystem::create_directories("results");
-    
+
     // Write raw data to the specified file
     CheckpointStats::write_raw_data("results/checkpoint_latency.csv");
 

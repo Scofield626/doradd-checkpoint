@@ -1,0 +1,26 @@
+{
+  "C_Cpp.intelliSenseEngine": "Disabled",
+  "clangd.onConfigChanged": "restart",
+  "clangd.arguments": [
+    "--background-index",
+    "--pch-storage=memory",
+    "--compile-commands-dir=app/build",
+    "--header-insertion=iwyu",
+    "--fallback-style=LLVM",
+    "--log=error"
+  ],
+  "[cpp]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"
+  },
+  "editor.formatOnSave": true,
+  "cmake.configureOnOpen": true,
+  "cmake.buildDirectory": "build",
+  "clangd.path": "clangd",
+  "C_Cpp.errorSquiggles": "Disabled",
+  "files.watcherExclude": {
+    "**/app/build/**": true,
+    "**/.git/**": true,
+    "**/external/**": true
+  },
+  "clangd.checkUpdates": true
+}

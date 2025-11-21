@@ -350,7 +350,7 @@ private:
   std::thread completion_thread;
   std::mutex completion_mu;
 
-  size_t tx_count_threshold{CHECKPOINT_BATCH_SIZE};
+  size_t tx_count_threshold{CHECKPOINT_THRESHOLD};
   std::atomic<size_t> tx_count_since_last_checkpoint{0};
   std::atomic<size_t> total_transactions{0};
   using clock = std::chrono::steady_clock;

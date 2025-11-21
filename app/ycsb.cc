@@ -1,8 +1,9 @@
-#include "ycsb/constants.hpp"
-#include "ycsb/db.hpp"
 #include "pipeline.hpp"
 #include "txcounter.hpp"
+#include "ycsb/constants.hpp"
+#include "ycsb/db.hpp"
 
+#include <cstdint>
 #include <thread>
 
 #define GET_COWN(_INDEX) \
@@ -16,7 +17,7 @@
       memset(acq_row##_INDEX->payload, sum, WRITE_SIZE); \
     else \
     { \
-      for (int j = 0; j < ROW_SIZE; j++) \
+      for (uint32_t j = 0; j < ROW_SIZE; j++) \
         sum += acq_row##_INDEX->payload[j]; \
     } \
     write_set_l >>= 1; \
@@ -39,27 +40,25 @@ struct YCSBRow
   char payload[ROW_SIZE];
 };
 
-
 struct YCSBTransaction
 {
 public:
   using RowType = YCSBRow;
   static Index<YCSBRow>* index;
-  typedef struct __attribute__((packed))
+  using Marshalled = struct __attribute__((packed))
   {
     uint32_t indices[ROWS_PER_TX];
     uint16_t write_set;
     uint64_t cown_ptrs[ROWS_PER_TX];
     uint32_t indices_size;
     uint8_t pad[2];
-  } Marshalled;
-  // static_assert(sizeof(YCSBTransactionMarshalled) == 128);
+  };
 
   static int prepare_cowns(char* input)
   {
     auto txm = reinterpret_cast<Marshalled*>(input);
 
-    for (int i = 0; i < ROWS_PER_TX; i++)
+    for (uint32_t i = 0; i < ROWS_PER_TX; i++)
     {
       if (txm->indices[i] >= DB_SIZE)
       {
@@ -78,9 +77,8 @@ public:
   {
     auto txm = reinterpret_cast<const Marshalled*>(input);
 
-    for (int i = 0; i < ROWS_PER_TX; i++)
-      __builtin_prefetch(
-        reinterpret_cast<const void*>(txm->cown_ptrs[i]), 1, 3);
+    for (unsigned long cown_ptr : txm->cown_ptrs)
+      __builtin_prefetch(reinterpret_cast<const void*>(cown_ptr), 1, 3);
 
     return sizeof(Marshalled);
   }
@@ -91,8 +89,7 @@ public:
   static int parse_and_process(const char* input)
 #endif // RPC_LATENCY
   {
-    const Marshalled* txm =
-      reinterpret_cast<const Marshalled*>(input);
+    const Marshalled* txm = reinterpret_cast<const Marshalled*>(input);
 
     auto ws_cap = txm->write_set;
 
@@ -139,7 +136,7 @@ public:
        AcqType acq_row9) {
         uint8_t sum = 0;
         uint16_t write_set_l = ws_cap;
-        int j;
+        [[maybe_unused]] int j;
         TXN(0);
         TXN(1);
         TXN(2);
@@ -172,16 +169,16 @@ int main(int argc, char** argv)
   }
 
   uint8_t core_cnt = atoi(argv[2]);
-  uint8_t max_core = std::thread::hardware_concurrency();
+  [[maybe_unused]] uint8_t max_core = std::thread::hardware_concurrency();
   assert(1 < core_cnt && core_cnt <= max_core);
 
   // Create rows (cowns) with huge pages and via static allocation
   YCSBTransaction::index = new Index<YCSBRow>;
-  uint64_t cown_prev_addr = 0;
+  [[maybe_unused]] uint64_t cown_prev_addr = 0;
   uint8_t* cown_arr_addr =
     static_cast<uint8_t*>(aligned_alloc_hpage(1024 * DB_SIZE));
 
-  for (int i = 0; i < DB_SIZE; i++)
+  for (uint64_t i = 0; i < DB_SIZE; i++)
   {
     cown_ptr<YCSBRow> cown_r = make_cown_custom<YCSBRow>(
       reinterpret_cast<void*>(cown_arr_addr + (uint64_t)1024 * i));
@@ -192,8 +189,6 @@ int main(int argc, char** argv)
 
     YCSBTransaction::index->insert_row(cown_r);
   }
-
-  
 
   build_pipelines<YCSBTransaction>(core_cnt - 1, argv[3], argv[5]);
 }

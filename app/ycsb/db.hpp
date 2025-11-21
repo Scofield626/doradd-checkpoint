@@ -34,9 +34,7 @@ public:
       map[cnt] = r;
       return cnt++;
     }
-    else
-    {
-      throw std::out_of_range("Index is full");
-    }
+
+    throw std::out_of_range("Index is full");
   }
 };

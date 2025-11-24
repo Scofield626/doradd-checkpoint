@@ -41,8 +41,7 @@ void build_pipelines(
   counter_map_mutex = new std::mutex();
 
   // Create storage instance and checkpointer
-  auto* checkpointer = new Checkpointer<RocksDBStore, T, typename T::RowType>(
-    "/home/syl121/database/checkpoint.db");
+  auto* checkpointer = new Checkpointer<RocksDBStore, T, typename T::RowType>();
 
   // Pass command line arguments to the checkpointer if available
   if (argc > 0 && argv != nullptr)

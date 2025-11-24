@@ -8,6 +8,7 @@
 #include "warmup.hpp"
 
 #include <cassert>
+#include <cstring>
 #include <fcntl.h>
 #include <mutex>
 #include <stdio.h>
@@ -523,6 +524,35 @@ struct Spawner
     return sum;
   }
 
+  void print_stats(double spawn_tps, double exec_tps, double duration_sec)
+  {
+    // Print to console
+    printf("spawn - %lf tx/s\n", spawn_tps);
+    printf("exec  - %lf tx/s\n", exec_tps);
+    printf("dur in seconds: %lf\n", duration_sec);
+
+    // Optionally write to file if path is set and file can be opened
+    const char* results_file = std::getenv("DORADD_RESULTS_FILE");
+    if (!results_file)
+    {
+      printf("Potential alert: results file not set\n");
+      results_file = "results/spawn.txt"; // default for backward compatibility
+    }
+
+    FILE* res_throughput_fd = fopen(results_file, "w");
+    if (res_throughput_fd)
+    {
+      fprintf(res_throughput_fd, "spawn - %lf tx/s\n", spawn_tps);
+      fprintf(res_throughput_fd, "exec  - %lf tx/s\n", exec_tps);
+      fprintf(
+        res_throughput_fd,
+        "Number of checkpoints: %lu\n",
+        checkpointer->get_total_checkpoints());
+      fflush(res_throughput_fd);
+      fclose(res_throughput_fd);
+    }
+  }
+
 #ifdef RPC_LATENCY
   int dispatch_one()
   {
@@ -614,27 +644,12 @@ struct Spawner
         auto dur_cnt = duration.count();
         if (counter_registered)
           tx_exec_sum = calc_tx_exec_sum();
-        FILE* res_throughput_fd = fopen("results/spawn.txt", "a");
-        printf("spawn - %lf tx/s\n", static_cast<double>(tx_count) / dur_cnt);
-        printf(
-          "exec  - %lf tx/s\n",
-          static_cast<double>(tx_exec_sum - last_tx_exec_sum) / dur_cnt);
-        printf("dur in seconds: %lf\n", dur_cnt);
-        fprintf(
-          res_throughput_fd,
-          "spawn - %lf tx/s\n",
-          static_cast<double>(tx_count) / dur_cnt);
-        fprintf(
-          res_throughput_fd,
-          "exec  - %lf tx/s\n",
-          static_cast<double>(tx_exec_sum - last_tx_exec_sum) / dur_cnt);
-        fprintf(
-          res_throughput_fd,
-          "Number of checkpoints: %lu\n",
-          checkpointer->get_total_checkpoints());
 
-        fflush(res_throughput_fd);
-        fclose(res_throughput_fd);
+        double spawn_tps = static_cast<double>(tx_count) / dur_cnt;
+        double exec_tps =
+          static_cast<double>(tx_exec_sum - last_tx_exec_sum) / dur_cnt;
+
+        print_stats(spawn_tps, exec_tps, dur_cnt);
 
 #ifdef RPC_LATENCY
         // fprintf(res_log_fd, "%lf\n", tx_count / dur_cnt);

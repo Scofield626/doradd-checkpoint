@@ -37,6 +37,11 @@ if(NOT DEFINED CHECKPOINT_THRESHOLD)
   set(CHECKPOINT_THRESHOLD 100000)
 endif()
 
+# Set default checkpoint db path if not defined
+if(NOT DEFINED CHECKPOINT_DB_PATH)
+  set(CHECKPOINT_DB_PATH "checkpoint.db")
+endif()
+
 # YCSB
 add_executable(ycsb ycsb.cc)
 add_compile_definitions(PREFETCH)
@@ -51,6 +56,7 @@ add_compile_definitions(INDEXER)
 # Add CHECKPOINT_BATCH_SIZE and CHECKPOINT_THRESHOLD as compile definitions
 target_compile_definitions(ycsb PRIVATE CHECKPOINT_BATCH_SIZE=${CHECKPOINT_BATCH_SIZE})
 target_compile_definitions(ycsb PRIVATE CHECKPOINT_THRESHOLD=${CHECKPOINT_THRESHOLD})
+target_compile_definitions(ycsb PRIVATE "CHECKPOINT_DB_PATH=\"${CHECKPOINT_DB_PATH}\"")
 
 target_include_directories(ycsb PRIVATE ../src/misc)
 target_include_directories(ycsb PRIVATE ../src/doradd)
@@ -152,4 +158,4 @@ target_link_libraries(rocksdb_test PRIVATE GTest::GTest GTest::Main)
 # target_link_libraries(pipeline_test PRIVATE GTest::GTest GTest::Main)
 # target_include_directories(pipeline_test PRIVATE ../external/SPSCQueue/include/rigtorp)
 
-add_definitions(-DCHECKPOINT_DB_PATH="/path/to/your/database/checkpoint.db")
+

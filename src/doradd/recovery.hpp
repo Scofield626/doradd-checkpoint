@@ -5,11 +5,12 @@
 #include <unordered_map>
 #include <memory>
 #include "checkpoint_stats.hpp"
+#include "checkpointer.hpp"
 
 template<typename StorageType, typename RowType>
 class Recovery {
 public:
-    Recovery(const std::string& path = "/home/syl121/database/checkpoint.db") {
+    Recovery(const std::string& path = DefaultDBPath) {
         if (!storage.open(path)) {
             throw std::runtime_error("Failed to open recovery database");
         }

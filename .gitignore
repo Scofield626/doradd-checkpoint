@@ -8,7 +8,7 @@ app/build-dbg/*
 *.idx
 *.res
 *.db
-*/generator
+app/*/gen-log/generator
 
 app/tpcc_gen.cc
 

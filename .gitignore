@@ -1,12 +1,14 @@
-app/build/
-app/build-dbg/
-scripts/*.txt
+app/build/*
+app/build-dbg/*
+*.txt
 
 *.swp
 *.log
 *.out
 *.idx
 *.res
+*.db
+*/generator
 
 app/tpcc_gen.cc
 

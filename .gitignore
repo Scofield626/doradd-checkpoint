@@ -8,8 +8,10 @@ app/build-dbg/*
 *.idx
 *.res
 *.db
+*.cc.ast.sh
 app/*/gen-log/generator
 
 app/tpcc_gen.cc
 
 app/pipeline-profile/pipeline
+infer-out/

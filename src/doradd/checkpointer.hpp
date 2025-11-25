@@ -108,7 +108,7 @@ public:
       throw std::runtime_error("Failed to open DB");
 
     // Initialize garbage collector
-    gc = std::make_unique<GarbageCollector>(storage);
+    gc = std::make_unique<GarbageCollector<StorageType>>(storage);
   }
 
   ~Checkpointer()
@@ -215,8 +215,8 @@ public:
     // total_txns
     {
       std::lock_guard<std::mutex> lg(completion_mu);
-      completion_thread =
-        std::thread([this, snap, latch]() { // Capture num_batches
+      completion_thread = std::thread(
+        [this, snap, latch, keys_ptr]() mutable { // Capture num_batches
           latch->wait();
           auto batch = storage.create_batch();
           // bump the global snapshot in the DB
@@ -233,6 +233,9 @@ public:
           number_of_checkpoints_done.fetch_add(1, std::memory_order_relaxed);
 
           std::cout << "Checkpoint " << snap << " completed\n";
+
+          // Notify GC about the modified keys in this snapshot
+          gc->add_snapshot_keys(snap, std::move(keys_ptr));
         });
     }
   }
@@ -358,5 +361,5 @@ private:
 
   std::atomic<uint64_t> current_snapshot{0}; // Store the current snapshot ID
   static constexpr const char* GLOBAL_SNAPSHOT_KEY = "global_snapshot";
-  std::unique_ptr<GarbageCollector> gc;
+  std::unique_ptr<GarbageCollector<StorageType>> gc;
 };

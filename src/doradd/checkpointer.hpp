@@ -190,7 +190,8 @@ public:
     // 7) Define the per‐batch write operation
     auto op = [this, latch, keys_ptr, snap](
                 const uint64_t* key_ptr, RowType** items, size_t cnt) {
-      auto batch = storage.create_batch();
+      std::vector<std::pair<std::string, std::string>> writes;
+      writes.reserve(cnt);
       for (size_t i = 0; i < cnt; ++i)
       {
         RowType& obj = *items[i];
@@ -199,10 +200,18 @@ public:
         // write under "<row_id>_v<version_id>"
         std::string versioned_key =
           std::to_string(key_ptr[i]) + "_v" + std::to_string(snap);
-        storage.add_to_batch(batch, versioned_key, data);
+        writes.emplace_back(std::move(versioned_key), std::move(data));
       }
-      storage.commit_batch(batch);
-      latch->count_down();
+
+      when() << [this, latch, writes = std::move(writes)]() {
+        auto batch = storage.create_batch();
+        for (const auto& kv : writes)
+        {
+          storage.add_to_batch(batch, kv.first, kv.second);
+        }
+        storage.commit_batch(batch);
+        latch->count_down();
+      };
     };
 
     // 8) Dispatch all the batches

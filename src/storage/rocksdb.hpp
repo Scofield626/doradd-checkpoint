@@ -194,32 +194,9 @@ public:
     if (!it)
       return;
 
-    // Optimization: Check if we need to Seek
-    if (it->Valid())
-    {
-      rocksdb::Slice k = it->key();
-      int cmp = k.compare(prefix);
-      if (cmp < 0)
-      {
-        // Current key is smaller than prefix, must Seek
-        it->Seek(prefix);
-      }
-      else
-      {
-        // Current key is >= prefix.
-        // If it starts with prefix, we are good.
-        // If it doesn't start with prefix, then prefix is not found (since keys
-        // are sorted). We can skip Seek!
-        if (!k.starts_with(prefix))
-        {
-          return;
-        }
-      }
-    }
-    else
-    {
-      it->Seek(prefix);
-    }
+    // Optimization disabled for debugging
+    // if (it->Valid()) ...
+    it->Seek(prefix);
 
     for (; it->Valid() && it->key().starts_with(prefix); it->Next())
     {

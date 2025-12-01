@@ -16,40 +16,14 @@ class GarbageCollector
 {
 public:
   static constexpr int GC_INTERVAL_SECONDS = 5; // Run GC every 5 seconds
-  static constexpr int KEEP_VERSIONS = 2; // Keep K-2 versions
+  static constexpr int KEEP_VERSIONS = 0; // Keep K-2 versions
   static constexpr const char* GLOBAL_SNAPSHOT_KEY = "global_snapshot";
 
-  GarbageCollector(StorageType& store) : storage(store), stop_gc(false)
+  GarbageCollector(StorageType& store) : storage(store)
   {
-    // Start GC thread
-    gc_thread = std::thread([this]() {
-      std::unique_lock<std::mutex> lock(cv_mutex);
-      while (!stop_gc)
-      {
-        cv.wait_for(lock, std::chrono::seconds(GC_INTERVAL_SECONDS), [this] {
-          return stop_gc.load();
-        });
-        if (!stop_gc)
-        {
-          // Unlock while running GC to allow other operations
-          lock.unlock();
-          run_gc();
-          lock.lock();
-        }
-      }
-    });
   }
 
-  ~GarbageCollector()
-  {
-    // Stop GC thread
-    stop_gc = true;
-    cv.notify_all();
-    if (gc_thread.joinable())
-    {
-      gc_thread.join();
-    }
-  }
+  ~GarbageCollector() = default;
 
   void add_snapshot_keys(
     uint64_t snapshot_id, std::shared_ptr<std::vector<uint64_t>> keys)
@@ -177,13 +151,8 @@ public:
   }
 
   StorageType& storage;
-  std::thread gc_thread;
-  std::atomic<bool> stop_gc;
 
   std::mutex history_mutex;
   std::deque<std::pair<uint64_t, std::shared_ptr<std::vector<uint64_t>>>>
     snapshot_history;
-
-  std::condition_variable cv;
-  std::mutex cv_mutex;
 };

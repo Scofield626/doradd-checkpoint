@@ -15,7 +15,7 @@ template<typename StorageType>
 class GarbageCollector
 {
 public:
-  static constexpr int GC_INTERVAL_SECONDS = 5; // Run GC every 5 seconds 
+  static constexpr int GC_INTERVAL_SECONDS = 5; // Run GC every 5 seconds
   static constexpr int KEEP_VERSIONS = 2; // Keep K-2 versions
   static constexpr const char* GLOBAL_SNAPSHOT_KEY = "global_snapshot";
 
@@ -102,7 +102,14 @@ public:
       unique_keys.insert(keys->begin(), keys->end());
     }
 
-    for (uint64_t row_id : unique_keys)
+    std::vector<uint64_t> sorted_keys(unique_keys.begin(), unique_keys.end());
+    std::sort(
+      sorted_keys.begin(), sorted_keys.end(), [](uint64_t a, uint64_t b) {
+        return std::to_string(a) < std::to_string(b);
+      });
+
+    auto it = storage.create_iterator();
+    for (uint64_t row_id : sorted_keys)
     {
       // For each dirty key in this old snapshot, we need to check if we have
       // too many versions We scan specifically for this row_id
@@ -110,15 +117,14 @@ public:
 
       std::vector<std::pair<uint64_t, std::string>> versions;
 
-      storage.scan_keys(
-        prefix, [&](const std::string& key) {
-          auto pos = key.rfind("_v");
-          if (pos != std::string::npos)
-          {
-            uint64_t version_id = std::stoull(key.substr(pos + 2));
-            versions.emplace_back(version_id, key);
-          }
-        });
+      storage.scan_keys(it, prefix, [&](const std::string& key) {
+        auto pos = key.rfind("_v");
+        if (pos != std::string::npos)
+        {
+          uint64_t version_id = std::stoull(key.substr(pos + 2));
+          versions.emplace_back(version_id, key);
+        }
+      });
 
       if (versions.empty())
         continue;

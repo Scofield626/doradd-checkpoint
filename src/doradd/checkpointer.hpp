@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cpp/when.h>
 #include <cstdint>
+#include <flushscheduler.h>
 #include <latch>
 #include <mutex>
 #include <thread>
@@ -190,22 +191,35 @@ public:
     // 7) Define the per‐batch write operation
     auto op = [this, latch, keys_ptr, snap](
                 const uint64_t* key_ptr, RowType** items, size_t cnt) {
-      if (use_copy_then_release)
+      std::vector<std::pair<std::string, std::string>> writes;
+      writes.reserve(cnt);
+      for (size_t i = 0; i < cnt; ++i)
       {
-        std::vector<std::pair<std::string, std::string>> writes;
-        writes.reserve(cnt);
-        for (size_t i = 0; i < cnt; ++i)
-        {
-          RowType& obj = *items[i];
-          // serialize the row
-          std::string data(
-            reinterpret_cast<const char*>(&obj), sizeof(RowType));
-          // write under "<row_id>_v<version_id>"
-          std::string versioned_key =
-            std::to_string(key_ptr[i]) + "_v" + std::to_string(snap);
-          writes.emplace_back(std::move(versioned_key), std::move(data));
-        }
+        RowType& obj = *items[i];
+        // serialize the row
+        std::string data(reinterpret_cast<const char*>(&obj), sizeof(RowType));
+        // write under "<row_id>_v<version_id>"
+        std::string versioned_key =
+          std::to_string(key_ptr[i]) + "_v" + std::to_string(snap);
+        writes.emplace_back(std::move(versioned_key), std::move(data));
+      }
 
+      // Schedule the flush work on the appropriate scheduler
+      if (use_flush_scheduler)
+      {
+        verona::rt::schedule_flush_lambda(
+          [this, latch, writes = std::move(writes)]() {
+            auto batch = storage.create_batch();
+            for (const auto& kv : writes)
+            {
+              storage.add_to_batch(batch, kv.first, kv.second);
+            }
+            storage.commit_batch(batch);
+            latch->count_down();
+          });
+      }
+      else
+      {
         when() << [this, latch, writes = std::move(writes)]() {
           auto batch = storage.create_batch();
           for (const auto& kv : writes)
@@ -215,23 +229,6 @@ public:
           storage.commit_batch(batch);
           latch->count_down();
         };
-      }
-      else
-      {
-        auto batch = storage.create_batch();
-        for (size_t i = 0; i < cnt; ++i)
-        {
-          RowType& obj = *items[i];
-          // serialize the row
-          std::string data(
-            reinterpret_cast<const char*>(&obj), sizeof(RowType));
-          // write under "<row_id>_v<version_id>"
-          std::string versioned_key =
-            std::to_string(key_ptr[i]) + "_v" + std::to_string(snap);
-          storage.add_to_batch(batch, versioned_key, data);
-        }
-        storage.commit_batch(batch);
-        latch->count_down();
       }
     };
 
@@ -371,13 +368,13 @@ public:
           fprintf(stderr, "Invalid threshold: %s\n", argv[i]);
         }
       }
-      else if (std::string(argv[i]) == "--copy-then-release")
+      else if (std::string(argv[i]) == "--use-main-scheduler")
       {
-        use_copy_then_release = true;
+        use_flush_scheduler = false;
       }
-      else if (std::string(argv[i]) == "--no-copy-then-release")
+      else if (std::string(argv[i]) == "--use-flush-scheduler")
       {
-        use_copy_then_release = false;
+        use_flush_scheduler = true;
       }
     }
   }
@@ -400,5 +397,7 @@ private:
   std::atomic<uint64_t> current_snapshot{0}; // Store the current snapshot ID
   static constexpr const char* GLOBAL_SNAPSHOT_KEY = "global_snapshot";
   std::unique_ptr<GarbageCollector<StorageType>> gc;
-  bool use_copy_then_release = true;
+
+  // Flag to control whether to use flush scheduler (default: true)
+  bool use_flush_scheduler = true;
 };

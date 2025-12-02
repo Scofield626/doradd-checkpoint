@@ -8,7 +8,8 @@
 #include <chrono>
 #include <cpp/when.h>
 #include <cstdint>
-#include <flushscheduler.h>
+#include "flushscheduler.hpp"
+#include "gcscheduler.hpp"
 #include <latch>
 #include <mutex>
 #include <thread>
@@ -154,6 +155,11 @@ public:
 
   void process_checkpoint_request(rigtorp::SPSCQueue<int>* ring)
   {
+    std::cout << "Processing checkpoint request" << std::endl;
+
+    // Record checkpoint start time
+    auto checkpoint_start = std::chrono::steady_clock::now();
+
     // 1) Wait for any previous checkpoint to finish
     {
       std::lock_guard<std::mutex> lg(completion_mu);
@@ -170,6 +176,9 @@ public:
     auto keys_ptr =
       std::make_shared<std::vector<uint64_t>>(std::move(diffs[idx]));
     diffs[idx].clear();
+
+    // Record number of objects to checkpoint
+    size_t num_objects = keys_ptr->size();
 
     // 4) Collect the corresponding cowns
     std::vector<cown_ptr<RowType>> cows;
@@ -243,7 +252,7 @@ public:
     {
       std::lock_guard<std::mutex> lg(completion_mu);
       completion_thread = std::thread(
-        [this, snap, latch, keys_ptr]() mutable { // Capture num_batches
+        [this, snap, latch, keys_ptr, checkpoint_start, num_objects]() mutable {
           latch->wait();
           auto batch = storage.create_batch();
           // bump the global snapshot in the DB
@@ -259,10 +268,24 @@ public:
 
           number_of_checkpoints_done.fetch_add(1, std::memory_order_relaxed);
 
+          // Calculate checkpoint metrics
+          auto checkpoint_end = std::chrono::steady_clock::now();
+          std::chrono::duration<double> duration = checkpoint_end - checkpoint_start;
+          double throughput = num_objects / duration.count();
+
           std::cout << "Checkpoint " << snap << " completed\n";
+          std::cout << "Checkpoint Performance: "
+                    << num_objects << " objects in "
+                    << duration.count() << " seconds ("
+                    << throughput << " objects/sec)\n";
 
           // Notify GC about the modified keys in this snapshot
           gc->add_snapshot_keys(snap, std::move(keys_ptr));
+
+          // Schedule GC to run on the dedicated GC scheduler
+          verona::rt::schedule_gc_lambda([this]() {
+            gc->run_gc();
+          });
         });
     }
   }

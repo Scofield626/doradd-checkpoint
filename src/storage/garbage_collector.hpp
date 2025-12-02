@@ -16,7 +16,7 @@ class GarbageCollector
 {
 public:
   static constexpr int GC_INTERVAL_SECONDS = 5; // Run GC every 5 seconds
-  static constexpr int KEEP_VERSIONS = 0; // Keep K-2 versions
+  static constexpr int KEEP_VERSIONS = 2; // Keep K-2 versions
   static constexpr const char* GLOBAL_SNAPSHOT_KEY = "global_snapshot";
 
   GarbageCollector(StorageType& store) : storage(store)

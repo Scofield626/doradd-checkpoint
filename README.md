@@ -22,7 +22,7 @@ git submodule update --init
 
 ```
 sudo apt-get update
-sudo apt-get install -y pkg-config libssl-dev clang libclang-dev build-essential ninja-build cmake cpufrequtils htop python3-pip libgtest-dev librocksdb-dev
+sudo apt-get install -y pkg-config libssl-dev clang libclang-dev build-essential ninja-build cmake cpufrequtils htop python3-pip libgtest-dev librocksdb-dev libgflags-dev libsnappy-dev libbz2-dev liblz4-dev libzstd-dev
 pip install numpy
 ```
 

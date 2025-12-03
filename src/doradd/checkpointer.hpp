@@ -76,9 +76,7 @@ namespace batch_helpers
 
 #ifdef PREFETCH
     // Prefetch cowns to improve cache hits when invoking when()
-    // Limit to 16 cowns to avoid cache pollution
-    size_t prefetch_count = std::min(remain, static_cast<size_t>(16));
-    for (size_t i = 0; i < prefetch_count; ++i)
+    for (size_t i = 0; i < remain; ++i)
     {
       __builtin_prefetch(&cowns[start + i], 0, 3); // read-only
     }

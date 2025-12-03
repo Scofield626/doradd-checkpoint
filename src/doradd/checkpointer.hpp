@@ -10,7 +10,7 @@
 #include <cstdint>
 #include "flushscheduler.hpp"
 #include "gcscheduler.hpp"
-#include <latch>
+#include <condition_variable>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -126,9 +126,8 @@ public:
 
   ~Checkpointer()
   {
-    std::lock_guard<std::mutex> lg(completion_mu);
-    if (completion_thread.joinable())
-      completion_thread.join();
+    std::unique_lock<std::mutex> lg(completion_mu);
+    completion_cv.wait(lg, [this]() { return !checkpoint_active; });
   }
 
   void set_index(Index<RowType>* idx)
@@ -167,15 +166,18 @@ public:
   void process_checkpoint_request(rigtorp::SPSCQueue<int>* ring)
   {
     std::cout << "Processing checkpoint request" << std::endl;
+    auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+    std::cout << "timestamp: " << timestamp_ms << "\n";
 
     // Record checkpoint start time
     auto checkpoint_start = std::chrono::steady_clock::now();
 
-    // 1) Wait for any previous checkpoint to finish
+    // 1) Wait for any previous checkpoint to finish and mark this one active
     {
-      std::lock_guard<std::mutex> lg(completion_mu);
-      if (completion_thread.joinable())
-        completion_thread.join();
+      std::unique_lock<std::mutex> lg(completion_mu);
+      completion_cv.wait(lg, [this]() { return !checkpoint_active; });
+      checkpoint_active = true;
     }
 
     // 2) Pop the marker and clear the in‐flight flag
@@ -200,16 +202,73 @@ public:
         cows.push_back(*p);
     }
 
-    // 5) Calculate number of batches and create a latch
-    size_t num_batches = cows.size() / BatchSize + cows.size() % BatchSize;
-    auto latch = std::make_shared<std::latch>(num_batches);
+    // 5) Calculate number of batches and create an atomic counter
+    size_t num_batches =
+      (cows.size() + BatchSize - 1) / BatchSize;
+    auto remaining = std::make_shared<std::atomic<size_t>>(num_batches);
 
     // 6) Allocate a new snapshot ID for this checkpoint
     uint64_t snap =
       current_snapshot.fetch_add(1, std::memory_order_relaxed) + 1;
 
-    // 7) Define the per‐batch write operation
-    auto op = [this, latch, keys_ptr, snap](
+    // 7) Define the finalization function
+    auto finalize = std::make_shared<std::function<void()>>();
+    *finalize = [this,
+                 snap,
+                 keys_ptr,
+                 checkpoint_start,
+                 num_objects,
+                 finalize]() mutable {
+        auto batch = storage.create_batch();
+        storage.add_to_batch(
+          batch, GLOBAL_SNAPSHOT_KEY, std::to_string(snap));
+        storage.add_to_batch(
+          batch,
+          "total_txns",
+          std::to_string(total_transactions.load(std::memory_order_relaxed)));
+        storage.commit_batch(batch);
+        storage.flush();
+
+        number_of_checkpoints_done.fetch_add(1, std::memory_order_relaxed);
+
+        auto checkpoint_end = std::chrono::steady_clock::now();
+        std::chrono::duration<double> duration =
+          checkpoint_end - checkpoint_start;
+        double throughput = num_objects / duration.count();
+
+        std::cout << "Checkpoint " << snap << " completed\n";
+        std::cout << "Checkpoint Performance: "
+                  << num_objects << " objects in "
+                  << duration.count() << " seconds ("
+                  << throughput << " objects/sec)\n";
+        auto timestamp_ms =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count();
+        std::cout << "timestamp: " << timestamp_ms << "\n";
+
+        gc->add_snapshot_keys(snap, std::move(keys_ptr));
+        verona::rt::schedule_gc_lambda([this]() {
+          gc->run_gc();
+        });
+
+        {
+          std::lock_guard<std::mutex> lg(completion_mu);
+          checkpoint_active = false;
+        }
+        completion_cv.notify_all();
+        *finalize = nullptr;
+      };
+
+    // If there are no batches (no dirty rows), finalize immediately
+    if (num_batches == 0)
+    {
+      (*finalize)();
+      return;
+    }
+
+    // 8) Define the per‐batch write operation
+    auto op = [this, remaining, snap, finalize](
                 const uint64_t* key_ptr, RowType** items, size_t cnt) {
       // Copy raw RowType data while holding cowns - this is fast (just memcpy)
       // We'll do the expensive serialization and formatting later in the flush lambda
@@ -225,7 +284,7 @@ public:
       if (use_flush_scheduler)
       {
         verona::rt::schedule_flush_lambda(
-          [this, latch, snap, row_data = std::move(row_data)]() {
+          [this, remaining, snap, finalize, row_data = std::move(row_data)]() {
             auto batch = storage.create_batch();
             for (const auto& [key, obj] : row_data)
             {
@@ -236,12 +295,13 @@ public:
               storage.add_to_batch(batch, versioned_key, data);
             }
             storage.commit_batch(batch);
-            latch->count_down();
+            if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1)
+              (*finalize)();
           });
       }
       else
       {
-        when() << [this, latch, snap, row_data = std::move(row_data)]() {
+        when() << [this, remaining, snap, finalize, row_data = std::move(row_data)]() {
           auto batch = storage.create_batch();
           for (const auto& [key, obj] : row_data)
           {
@@ -252,57 +312,16 @@ public:
             storage.add_to_batch(batch, versioned_key, data);
           }
           storage.commit_batch(batch);
-          latch->count_down();
+          if (remaining->fetch_sub(1, std::memory_order_acq_rel) == 1)
+            (*finalize)();
         };
       }
     };
 
-    // 8) Dispatch all the batches
+    // 9) Dispatch all the batches
     for (size_t i = 0; i < cows.size(); i += BatchSize)
     {
       batch_helpers::process_n_cowns<BatchSize>(cows, *keys_ptr, i, op);
-    }
-
-    // 9) Once every batch has finished, write the global snapshot pointer and
-    // total_txns
-    {
-      std::lock_guard<std::mutex> lg(completion_mu);
-      completion_thread = std::thread(
-        [this, snap, latch, keys_ptr, checkpoint_start, num_objects]() mutable {
-          latch->wait();
-          auto batch = storage.create_batch();
-          // bump the global snapshot in the DB
-          storage.add_to_batch(
-            batch, GLOBAL_SNAPSHOT_KEY, std::to_string(snap));
-          // persist the total‐transactions counter as before
-          storage.add_to_batch(
-            batch,
-            "total_txns",
-            std::to_string(total_transactions.load(std::memory_order_relaxed)));
-          storage.commit_batch(batch);
-          storage.flush();
-
-          number_of_checkpoints_done.fetch_add(1, std::memory_order_relaxed);
-
-          // Calculate checkpoint metrics
-          auto checkpoint_end = std::chrono::steady_clock::now();
-          std::chrono::duration<double> duration = checkpoint_end - checkpoint_start;
-          double throughput = num_objects / duration.count();
-
-          std::cout << "Checkpoint " << snap << " completed\n";
-          std::cout << "Checkpoint Performance: "
-                    << num_objects << " objects in "
-                    << duration.count() << " seconds ("
-                    << throughput << " objects/sec)\n";
-
-          // Notify GC about the modified keys in this snapshot
-          gc->add_snapshot_keys(snap, std::move(keys_ptr));
-
-          // Schedule GC to run on the dedicated GC scheduler
-          verona::rt::schedule_gc_lambda([this]() {
-            gc->run_gc();
-          });
-        });
     }
   }
 
@@ -401,6 +420,7 @@ public:
         try
         {
           tx_count_threshold = std::stoul(argv[++i]);
+          std::cout << "Checkpointer: Setting transaction threshold to " << tx_count_threshold << std::endl;
         }
         catch (...)
         {
@@ -410,10 +430,12 @@ public:
       else if (std::string(argv[i]) == "--use-main-scheduler")
       {
         use_flush_scheduler = false;
+        std::cout << "Checkpointer: Using main scheduler for checkpoint I/O" << std::endl;
       }
       else if (std::string(argv[i]) == "--use-flush-scheduler")
       {
         use_flush_scheduler = true;
+        std::cout << "Checkpointer: Using dedicated flush scheduler for checkpoint I/O" << std::endl;
       }
     }
   }
@@ -424,8 +446,9 @@ private:
   std::atomic<bool> checkpoint_in_flight{false};
   std::atomic<int> current_diff_idx{0};
   std::array<std::vector<uint64_t>, 2> diffs;
-  std::thread completion_thread;
   std::mutex completion_mu;
+  std::condition_variable completion_cv;
+  bool checkpoint_active{false};
 
   size_t tx_count_threshold{CHECKPOINT_THRESHOLD};
   std::atomic<size_t> tx_count_since_last_checkpoint{0};

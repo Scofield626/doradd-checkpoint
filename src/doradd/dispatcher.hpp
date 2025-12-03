@@ -536,7 +536,9 @@ struct Spawner
     // Print to console
     printf("spawn - %lf tx/s\n", spawn_tps);
     printf("exec  - %lf tx/s\n", exec_tps);
-    printf("dur in seconds: %lf\n", duration_sec);
+    auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+    printf("timestamp: %ld\n", timestamp_ms);
 
     // Optionally write to file if path is set and file can be opened
     const char* results_file = std::getenv("DORADD_RESULTS_FILE");

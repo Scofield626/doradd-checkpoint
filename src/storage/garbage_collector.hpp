@@ -77,12 +77,8 @@ public:
     }
 
     std::vector<uint64_t> sorted_keys(unique_keys.begin(), unique_keys.end());
-    std::sort(
-      sorted_keys.begin(), sorted_keys.end(), [](uint64_t a, uint64_t b) {
-        return std::to_string(a) < std::to_string(b);
-      });
+    std::sort(sorted_keys.begin(), sorted_keys.end());
 
-    auto it = storage.create_iterator();
     for (uint64_t row_id : sorted_keys)
     {
       // For each dirty key in this old snapshot, we need to check if we have
@@ -91,7 +87,7 @@ public:
 
       std::vector<std::pair<uint64_t, std::string>> versions;
 
-      storage.scan_keys(it, prefix, [&](const std::string& key) {
+      storage.scan_keys(prefix, [&](const std::string& key) {
         auto pos = key.rfind("_v");
         if (pos != std::string::npos)
         {

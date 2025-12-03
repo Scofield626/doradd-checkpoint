@@ -175,34 +175,7 @@ public:
     return result;
   }
 
-  // Create an iterator for reuse
-  std::shared_ptr<rocksdb::Iterator> create_iterator()
-  {
-    if (!db_)
-      return nullptr;
-    rocksdb::ReadOptions ro;
-    ro.prefix_same_as_start = true;
-    return std::shared_ptr<rocksdb::Iterator>(db_->NewIterator(ro));
-  }
 
-  // Scan keys using an existing iterator
-  void scan_keys(
-    std::shared_ptr<rocksdb::Iterator>& it,
-    const std::string& prefix,
-    const std::function<void(const std::string& key)>& callback)
-  {
-    if (!it)
-      return;
-
-    // Optimization disabled for debugging
-    // if (it->Valid()) ...
-    it->Seek(prefix);
-
-    for (; it->Valid() && it->key().starts_with(prefix); it->Next())
-    {
-      callback(it->key().ToString());
-    }
-  }
 
   // Callback-based scan for efficient iteration
   void scan_keys(

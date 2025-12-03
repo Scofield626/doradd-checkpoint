@@ -200,28 +200,29 @@ public:
     // 7) Define the per‐batch write operation
     auto op = [this, latch, keys_ptr, snap](
                 const uint64_t* key_ptr, RowType** items, size_t cnt) {
-      std::vector<std::pair<std::string, std::string>> writes;
-      writes.reserve(cnt);
+      // Copy raw RowType data while holding cowns - this is fast (just memcpy)
+      // We'll do the expensive serialization and formatting later in the flush lambda
+      std::vector<std::pair<uint64_t, RowType>> row_data;
+      row_data.reserve(cnt);
       for (size_t i = 0; i < cnt; ++i)
       {
-        RowType& obj = *items[i];
-        // serialize the row
-        std::string data(reinterpret_cast<const char*>(&obj), sizeof(RowType));
-        // write under "<row_id>_v<version_id>"
-        std::string versioned_key =
-          std::to_string(key_ptr[i]) + "_v" + std::to_string(snap);
-        writes.emplace_back(std::move(versioned_key), std::move(data));
+        row_data.emplace_back(key_ptr[i], *items[i]);
       }
 
       // Schedule the flush work on the appropriate scheduler
+      // NOW we defer the expensive work: string allocation, formatting, serialization
       if (use_flush_scheduler)
       {
         verona::rt::schedule_flush_lambda(
-          [this, latch, writes = std::move(writes)]() {
+          [this, latch, snap, row_data = std::move(row_data)]() {
             auto batch = storage.create_batch();
-            for (const auto& kv : writes)
+            for (const auto& [key, obj] : row_data)
             {
-              storage.add_to_batch(batch, kv.first, kv.second);
+              // Serialize the row
+              std::string data(reinterpret_cast<const char*>(&obj), sizeof(RowType));
+              // Format the versioned key
+              std::string versioned_key = std::to_string(key) + "_v" + std::to_string(snap);
+              storage.add_to_batch(batch, versioned_key, data);
             }
             storage.commit_batch(batch);
             latch->count_down();
@@ -229,11 +230,15 @@ public:
       }
       else
       {
-        when() << [this, latch, writes = std::move(writes)]() {
+        when() << [this, latch, snap, row_data = std::move(row_data)]() {
           auto batch = storage.create_batch();
-          for (const auto& kv : writes)
+          for (const auto& [key, obj] : row_data)
           {
-            storage.add_to_batch(batch, kv.first, kv.second);
+            // Serialize the row
+            std::string data(reinterpret_cast<const char*>(&obj), sizeof(RowType));
+            // Format the versioned key
+            std::string versioned_key = std::to_string(key) + "_v" + std::to_string(snap);
+            storage.add_to_batch(batch, versioned_key, data);
           }
           storage.commit_batch(batch);
           latch->count_down();

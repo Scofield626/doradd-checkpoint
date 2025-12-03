@@ -65,16 +65,11 @@ public:
     }
   }
 
-  int create_iterator()
-  {
-    return 0;
-  }
+
 
   void scan_keys(
-    int /*iterator*/,
     const std::string& prefix,
-    const std::function<void(const std::string& key)>&
-      callback)
+    const std::function<void(const std::string& key)>& callback)
   {
     auto it = data.lower_bound(prefix);
     while (it != data.end() && it->first.substr(0, prefix.size()) == prefix)

@@ -15,41 +15,15 @@ template<typename StorageType>
 class GarbageCollector
 {
 public:
-  static constexpr int GC_INTERVAL_SECONDS = 5; // Run GC every 5 seconds 
+  static constexpr int GC_INTERVAL_SECONDS = 5; // Run GC every 5 seconds
   static constexpr int KEEP_VERSIONS = 2; // Keep K-2 versions
   static constexpr const char* GLOBAL_SNAPSHOT_KEY = "global_snapshot";
 
-  GarbageCollector(StorageType& store) : storage(store), stop_gc(false)
+  GarbageCollector(StorageType& store) : storage(store)
   {
-    // Start GC thread
-    gc_thread = std::thread([this]() {
-      std::unique_lock<std::mutex> lock(cv_mutex);
-      while (!stop_gc)
-      {
-        cv.wait_for(lock, std::chrono::seconds(GC_INTERVAL_SECONDS), [this] {
-          return stop_gc.load();
-        });
-        if (!stop_gc)
-        {
-          // Unlock while running GC to allow other operations
-          lock.unlock();
-          run_gc();
-          lock.lock();
-        }
-      }
-    });
   }
 
-  ~GarbageCollector()
-  {
-    // Stop GC thread
-    stop_gc = true;
-    cv.notify_all();
-    if (gc_thread.joinable())
-    {
-      gc_thread.join();
-    }
-  }
+  ~GarbageCollector() = default;
 
   void add_snapshot_keys(
     uint64_t snapshot_id, std::shared_ptr<std::vector<uint64_t>> keys)
@@ -102,7 +76,10 @@ public:
       unique_keys.insert(keys->begin(), keys->end());
     }
 
-    for (uint64_t row_id : unique_keys)
+    std::vector<uint64_t> sorted_keys(unique_keys.begin(), unique_keys.end());
+    std::sort(sorted_keys.begin(), sorted_keys.end());
+
+    for (uint64_t row_id : sorted_keys)
     {
       // For each dirty key in this old snapshot, we need to check if we have
       // too many versions We scan specifically for this row_id
@@ -110,15 +87,14 @@ public:
 
       std::vector<std::pair<uint64_t, std::string>> versions;
 
-      storage.scan_keys(
-        prefix, [&](const std::string& key) {
-          auto pos = key.rfind("_v");
-          if (pos != std::string::npos)
-          {
-            uint64_t version_id = std::stoull(key.substr(pos + 2));
-            versions.emplace_back(version_id, key);
-          }
-        });
+      storage.scan_keys(prefix, [&](const std::string& key) {
+        auto pos = key.rfind("_v");
+        if (pos != std::string::npos)
+        {
+          uint64_t version_id = std::stoull(key.substr(pos + 2));
+          versions.emplace_back(version_id, key);
+        }
+      });
 
       if (versions.empty())
         continue;
@@ -171,13 +147,8 @@ public:
   }
 
   StorageType& storage;
-  std::thread gc_thread;
-  std::atomic<bool> stop_gc;
 
   std::mutex history_mutex;
   std::deque<std::pair<uint64_t, std::shared_ptr<std::vector<uint64_t>>>>
     snapshot_history;
-
-  std::condition_variable cv;
-  std::mutex cv_mutex;
 };

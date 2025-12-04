@@ -175,11 +175,12 @@ public:
     return result;
   }
 
+
+
   // Callback-based scan for efficient iteration
   void scan_keys(
     const std::string& prefix,
-    const std::function<void(const std::string& key)>&
-      callback)
+    const std::function<void(const std::string& key)>& callback)
   {
     if (!db_)
       return;

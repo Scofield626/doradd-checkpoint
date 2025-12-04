@@ -210,6 +210,8 @@ public:
     // warm-up
     prepare_run();
 
+    size_t check_time_cnt = 0;
+
     while (1)
     {
       if (!counter_registered)
@@ -236,20 +238,25 @@ public:
       dispatch_batch();
 
       // announce throughput
-      if (tx_count >= ANNOUNCE_THROUGHPUT_BATCH_SIZE)
+      check_time_cnt++;
+      if (check_time_cnt >= TIME_CHECK_INTERVAL)
       {
+        check_time_cnt = 0;
         auto time_now = std::chrono::system_clock::now();
         std::chrono::duration<double> duration = time_now - last_print;
-        auto dur_cnt = duration.count();
-        if (counter_registered)
-          tx_exec_sum = calc_tx_exec_sum();
-        printf("spawn - %lf tx/s\n", static_cast<double>(tx_count) / dur_cnt);
-        printf(
-          "exec  - %lf tx/s\n",
-          static_cast<double>(tx_exec_sum - last_tx_exec_sum) / dur_cnt);
-        tx_count = 0;
-        last_tx_exec_sum = tx_exec_sum;
-        last_print = time_now;
+        if (duration.count() >= ANNOUNCE_INTERVAL_SEC)
+        {
+          auto dur_cnt = duration.count();
+          if (counter_registered)
+            tx_exec_sum = calc_tx_exec_sum();
+          printf("spawn - %lf tx/s\n", static_cast<double>(tx_count) / dur_cnt);
+          printf(
+            "exec  - %lf tx/s\n",
+            static_cast<double>(tx_exec_sum - last_tx_exec_sum) / dur_cnt);
+          tx_count = 0;
+          last_tx_exec_sum = tx_exec_sum;
+          last_print = time_now;
+        }
       }
     }
   }
@@ -529,7 +536,9 @@ struct Spawner
     // Print to console
     printf("spawn - %lf tx/s\n", spawn_tps);
     printf("exec  - %lf tx/s\n", exec_tps);
-    printf("dur in seconds: %lf\n", duration_sec);
+    auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+    printf("timestamp: %ld\n", timestamp_ms);
 
     // Optionally write to file if path is set and file can be opened
     const char* results_file = std::getenv("DORADD_RESULTS_FILE");
@@ -580,6 +589,9 @@ struct Spawner
 
     // warm-up
     prepare_run();
+
+    last_print = std::chrono::system_clock::now();
+    size_t check_time_cnt = 0;
 
     // run
     while (1)
@@ -637,26 +649,31 @@ struct Spawner
 
       ring->pop();
       // announce throughput
-      if (tx_count >= ANNOUNCE_THROUGHPUT_BATCH_SIZE)
+      check_time_cnt++;
+      if (check_time_cnt >= TIME_CHECK_INTERVAL)
       {
+        check_time_cnt = 0;
         auto time_now = std::chrono::system_clock::now();
         std::chrono::duration<double> duration = time_now - last_print;
-        auto dur_cnt = duration.count();
-        if (counter_registered)
-          tx_exec_sum = calc_tx_exec_sum();
+        if (duration.count() >= ANNOUNCE_INTERVAL_SEC)
+        {
+          auto dur_cnt = duration.count();
+          if (counter_registered)
+            tx_exec_sum = calc_tx_exec_sum();
 
-        double spawn_tps = static_cast<double>(tx_count) / dur_cnt;
-        double exec_tps =
-          static_cast<double>(tx_exec_sum - last_tx_exec_sum) / dur_cnt;
+          double spawn_tps = static_cast<double>(tx_count) / dur_cnt;
+          double exec_tps =
+            static_cast<double>(tx_exec_sum - last_tx_exec_sum) / dur_cnt;
 
-        print_stats(spawn_tps, exec_tps, dur_cnt);
+          print_stats(spawn_tps, exec_tps, dur_cnt);
 
 #ifdef RPC_LATENCY
-        // fprintf(res_log_fd, "%lf\n", tx_count / dur_cnt);
+          // fprintf(res_log_fd, "%lf\n", tx_count / dur_cnt);
 #endif
-        tx_count = 0;
-        last_tx_exec_sum = tx_exec_sum;
-        last_print = time_now;
+          tx_count = 0;
+          last_tx_exec_sum = tx_exec_sum;
+          last_print = time_now;
+        }
       }
     }
   }

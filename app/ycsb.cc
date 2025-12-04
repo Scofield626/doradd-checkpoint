@@ -159,12 +159,12 @@ Index<YCSBRow>* YCSBTransaction::index;
 
 int main(int argc, char** argv)
 {
-  if (argc != 6 || strcmp(argv[1], "-n") != 0)
+  if (argc < 6 || strcmp(argv[1], "-n") != 0)
   {
     fprintf(
       stderr,
       "Usage: ./program -n core_cnt"
-      " <dispatcher_input_file> -i <inter_arrival>\n");
+      " <dispatcher_input_file> -i <inter_arrival> [options]\n");
     return -1;
   }
 
@@ -190,5 +190,5 @@ int main(int argc, char** argv)
     YCSBTransaction::index->insert_row(cown_r);
   }
 
-  build_pipelines<YCSBTransaction>(core_cnt - 1, argv[3], argv[5]);
+  build_pipelines<YCSBTransaction>(core_cnt - 1, argv[3], argv[5], argc, argv);
 }

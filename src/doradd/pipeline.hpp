@@ -10,6 +10,8 @@
 #include "rpc_handler.hpp"
 #include "txcounter.hpp"
 
+#include "flushscheduler.hpp"
+#include "gcscheduler.hpp"
 #include <thread>
 #include <unordered_map>
 
@@ -20,6 +22,18 @@ std::mutex* counter_map_mutex;
 // Global benchmark start time
 ts_type benchmark_start_time;
 
+// Global flush scheduler state
+std::thread* flush_scheduler_thread = nullptr;
+std::atomic<bool> flush_scheduler_running{false};
+int flush_worker_count = 2; // Configurable via command-line
+std::vector<int> flush_affinity; // Configurable via command-line
+
+// Global GC scheduler state
+std::thread* gc_scheduler_thread = nullptr;
+std::atomic<bool> gc_scheduler_running{false};
+int gc_worker_count = 1; // Configurable via command-line
+std::vector<int> gc_affinity; // Configurable via command-line
+
 template<typename T>
 void build_pipelines(
   int worker_cnt,
@@ -28,10 +42,104 @@ void build_pipelines(
   int argc = 0,
   char** argv = nullptr)
 {
+  // Parse flush scheduler arguments
+  if (argc > 0 && argv != nullptr)
+  {
+    for (int i = 1; i < argc; ++i)
+    {
+      if (std::string(argv[i]) == "--flush-workers" && i + 1 < argc)
+      {
+        flush_worker_count = std::stoi(argv[++i]);
+      }
+      else if (std::string(argv[i]) == "--flush-affinity" && i + 1 < argc)
+      {
+        std::string affinity_str = argv[++i];
+        size_t pos = 0;
+        while ((pos = affinity_str.find(',')) != std::string::npos)
+        {
+          flush_affinity.push_back(std::stoi(affinity_str.substr(0, pos)));
+          affinity_str.erase(0, pos + 1);
+        }
+        flush_affinity.push_back(std::stoi(affinity_str));
+      }
+      else if (std::string(argv[i]) == "--gc-workers" && i + 1 < argc)
+      {
+        gc_worker_count = std::stoi(argv[++i]);
+      }
+      else if (std::string(argv[i]) == "--gc-affinity" && i + 1 < argc)
+      {
+        std::string affinity_str = argv[++i];
+        size_t pos = 0;
+        while ((pos = affinity_str.find(',')) != std::string::npos)
+        {
+          gc_affinity.push_back(std::stoi(affinity_str.substr(0, pos)));
+          affinity_str.erase(0, pos + 1);
+        }
+        gc_affinity.push_back(std::stoi(affinity_str));
+      }
+    }
+  }
+
   // init verona-rt scheduler
   auto& sched = Scheduler::get();
   sched.init(worker_cnt + 1);
   when() << []() { std::cout << "Hello deterministic world!\n"; };
+
+  // init flush scheduler for checkpoint I/O
+  auto& flush_sched = verona::rt::FlushScheduler::get();
+  flush_sched.init(flush_worker_count);
+
+  // Set affinity for flush scheduler threads if specified
+  if (!flush_affinity.empty())
+  {
+    auto* core = flush_sched.first_core();
+    for (int i = 0; i < flush_worker_count; ++i)
+    {
+      // If we have fewer affinity values than workers, wrap around or reuse the
+      // last one? Let's wrap around for now.
+      core->affinity = flush_affinity[i % flush_affinity.size()];
+      core = core->next;
+      std::cout << "Flush scheduler affinity set to "
+                << flush_affinity[i % flush_affinity.size()] << std::endl;
+    }
+  }
+
+  // Schedule a task to add an external event source to keep the flush scheduler
+  // alive
+  verona::rt::schedule_flush_lambda(
+    []() { verona::rt::FlushScheduler::add_external_event_source(); });
+
+  // Start flush scheduler in a separate thread
+  flush_scheduler_running.store(true, std::memory_order_relaxed);
+  flush_scheduler_thread =
+    new std::thread([&flush_sched]() { flush_sched.run(); });
+
+  // init GC scheduler for garbage collection
+  auto& gc_sched = verona::rt::GCScheduler::get();
+  gc_sched.init(gc_worker_count);
+
+  // Set affinity for GC scheduler threads if specified
+  if (!gc_affinity.empty())
+  {
+    auto* core = gc_sched.first_core();
+    for (int i = 0; i < gc_worker_count; ++i)
+    {
+      core->affinity = gc_affinity[i % gc_affinity.size()];
+      core = core->next;
+      std::cout << "GC scheduler affinity set to "
+                << gc_affinity[i % gc_affinity.size()] << std::endl;
+    }
+  }
+
+  // Schedule a task to add an external event source to keep the GC scheduler
+  // alive
+  verona::rt::schedule_gc_lambda(
+    []() { verona::rt::GCScheduler::add_external_event_source(); });
+
+  // Start GC scheduler in a separate thread
+  gc_scheduler_running.store(true, std::memory_order_relaxed);
+  gc_scheduler_thread =
+    new std::thread([&gc_sched]() { gc_sched.run(); });
 
   // init stats collectors for workers
   counter_map = new std::unordered_map<std::thread::id, uint64_t*>();
@@ -179,7 +287,7 @@ void build_pipelines(
     });
 
     // flush latency logs
-    std::this_thread::sleep_for(std::chrono::seconds(300));
+    std::this_thread::sleep_for(std::chrono::seconds(500));
 
 #ifdef CORE_PIPE
     pthread_cancel(spawner_thread.native_handle());
@@ -229,4 +337,43 @@ void build_pipelines(
   };
 
   sched.run();
+
+  // Shutdown flush scheduler after main scheduler completes
+  if (flush_scheduler_thread != nullptr)
+  {
+    printf("Shutting down flush scheduler...\n");
+
+    // Schedule a task to remove the external event source to allow shutdown
+    verona::rt::schedule_flush_lambda(
+      []() { verona::rt::FlushScheduler::remove_external_event_source(); });
+
+    flush_scheduler_running.store(false, std::memory_order_relaxed);
+
+    // Stop the flush scheduler threads
+    // The threads will exit when they detect no more work
+
+    // Wait for the flush scheduler thread to complete
+    flush_scheduler_thread->join();
+    delete flush_scheduler_thread;
+    flush_scheduler_thread = nullptr;
+    printf("Flush scheduler shut down\n");
+  }
+
+  // Shutdown GC scheduler after main scheduler completes
+  if (gc_scheduler_thread != nullptr)
+  {
+    printf("Shutting down GC scheduler...\n");
+
+    // Schedule a task to remove the external event source to allow shutdown
+    verona::rt::schedule_gc_lambda(
+      []() { verona::rt::GCScheduler::remove_external_event_source(); });
+
+    gc_scheduler_running.store(false, std::memory_order_relaxed);
+
+    // Wait for the GC scheduler thread to complete
+    gc_scheduler_thread->join();
+    delete gc_scheduler_thread;
+    gc_scheduler_thread = nullptr;
+    printf("GC scheduler shut down\n");
+  }
 }
